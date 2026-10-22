@@ -1,0 +1,40 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css"><title>Вход — Коворкинг</title></head><body>
+<div id="nav"></div>
+<main><div class="wrap" style="max-width:760px">
+  <div class="two">
+    <form class="panel" id="lf">
+      <h2>Вход</h2>
+      <label>Email<input name="email" type="email" required value="user1@example.com"></label><br>
+      <label>Пароль<input name="password" type="password" required value="password"></label><br>
+      <button class="btn">Войти</button>
+      <p class="muted" style="font-size:.85rem">Демо: <code>user1@example.com / password</code><br>Админ: <code>admin@example.com / admin123</code></p>
+    </form>
+    <form class="panel" id="rf">
+      <h2>Регистрация</h2>
+      <label>Имя<input name="full_name" required></label><br>
+      <label>Email<input name="email" type="email" required></label><br>
+      <label>Пароль (от 6 символов)<input name="password" type="password" minlength="6" required></label><br>
+      <button class="btn ghost">Создать аккаунт</button>
+    </form>
+  </div>
+</div></main>
+<script src="js/app.js"></script>
+<script>
+renderNav('login');
+const next = new URLSearchParams(location.search).get('next') || 'index.html';
+async function login(email, password) {
+  const r = await api('/auth/login', { method: 'POST', body: { email, password } });
+  store.set(r.token, r.user); location.href = next;
+}
+document.getElementById('lf').addEventListener('submit', async e => {
+  e.preventDefault(); const f = new FormData(e.target);
+  try { await login(f.get('email'), f.get('password')); } catch (err) { toast(err.message, 'err'); }
+});
+document.getElementById('rf').addEventListener('submit', async e => {
+  e.preventDefault(); const f = new FormData(e.target);
+  try { await api('/auth/register', { method: 'POST', body: Object.fromEntries(f) }); await login(f.get('email'), f.get('password')); }
+  catch (err) { toast(err.message, 'err'); }
+});
+</script></body></html>

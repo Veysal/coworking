@@ -1,0 +1,128 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css"><title>Админка — Коворкинг</title>
+<script src="js/vendor/chart.umd.js"></script></head><body>
+<div id="nav"></div>
+<main><div class="wrap">
+  <h1>Админка</h1>
+  <div id="deny" class="empty" hidden>Раздел доступен только администратору. Войдите как <code>admin@example.com</code>.</div>
+  <div id="app" hidden>
+    <div class="tabs"><button class="on" data-tab="reports">Отчёты</button><button data-tab="rooms">Комнаты</button><button data-tab="audit">Аудит</button></div>
+
+    <section id="t-reports">
+      <div class="panel"><div class="row">
+        <label>С<input type="date" id="d1"></label><label>По<input type="date" id="d2"></label>
+        <button class="btn" id="apply">Показать</button>
+        <button class="btn ghost" id="refresh" title="REFRESH MATERIALIZED VIEW CONCURRENTLY">Обновить материализованные представления</button>
+      </div></div>
+      <div class="two">
+        <div class="panel"><h2>Загрузка комнат, %</h2><div class="chart-box"><canvas id="c1"></canvas></div></div>
+        <div class="panel"><h2>Брони по дням (из materialized view)</h2><div class="chart-box"><canvas id="c2"></canvas></div></div>
+      </div>
+      <div class="panel scroll"><h2>Рейтинг комнат <span class="muted" style="font-weight:400">— оконные функции RANK() и SUM() OVER</span></h2><div id="util"></div></div>
+      <div class="two">
+        <div class="panel scroll"><h2>Сводка <span class="muted" style="font-weight:400">— GROUPING SETS</span></h2><div id="sum"></div></div>
+        <div class="panel scroll"><h2>Топ-5 пользователей по зданиям <span class="muted" style="font-weight:400">— 90 дней</span></h2><div id="top"></div></div>
+      </div>
+      <div class="panel scroll"><h2>Самые активные пользователи <span class="muted" style="font-weight:400">— mv_user_stats</span></h2><div id="act"></div></div>
+    </section>
+
+    <section id="t-rooms" hidden>
+      <form class="panel" id="rf">
+        <h2>Новая комната</h2>
+        <div class="row">
+          <label class="grow">Название<input name="name" required></label>
+          <label>Этаж<select name="location_id" id="floor"></select></label>
+          <label>Мест<input name="capacity" type="number" min="1" value="6" style="width:90px" required></label>
+          <label>₽/час<input name="price" type="number" min="0" value="500" style="width:100px"></label>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label class="grow">Теги (через запятую)<input name="tags" placeholder="silent, meeting"></label>
+          <label class="check"><input type="checkbox" name="projector"> Проектор</label>
+          <label class="check"><input type="checkbox" name="whiteboard"> Доска</label>
+          <label class="check"><input type="checkbox" name="video_conference"> Видеосвязь</label>
+        </div>
+        <label style="margin-top:10px">Описание<textarea name="description" rows="2"></textarea></label>
+        <p><button class="btn">Создать комнату</button></p>
+      </form>
+      <div class="panel scroll" id="roomlist"></div>
+    </section>
+
+    <section id="t-audit" hidden>
+      <div class="panel"><div class="row">
+        <label>Таблица<select id="atable"><option value="">Все</option><option>bookings</option><option>rooms</option><option>users</option></select></label>
+        <span class="muted">Записи пишет триггер в партиционированную таблицу audit_log.</span>
+      </div></div>
+      <div class="panel scroll" id="auditlist"></div>
+    </section>
+  </div>
+</div></main>
+<script src="js/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const charts = {};
+function chart(id, cfg) { if (!window.Chart) return; charts[id]?.destroy(); charts[id] = new Chart($(id), { ...cfg, options: { maintainAspectRatio: false, ...(cfg.options || {}) } }); }
+const table = (head, rows, cls = []) => rows.length ? `<table><tr>${head.map((h, i) => `<th class="${cls[i] || ''}">${h}</th>`).join('')}</tr>${rows.join('')}</table>` : '<div class="empty">Данных нет.</div>';
+
+async function reports() {
+  const p = { from: $('d1').value, to: $('d2').value };
+  try {
+    const [util, daily, sum, top, act] = await Promise.all([
+      api('/reports/utilization', { params: { ...p, limit: 60 } }), api('/reports/daily', { params: p }), api('/reports/summary', { params: p }),
+      api('/reports/top-users', { params: { per_building: 5 } }), api('/reports/active-users')]);
+    chart('c1', { type: 'bar', data: { labels: util.slice(0, 12).map(r => r.room_name), datasets: [{ label: 'Загрузка, %', data: util.slice(0, 12).map(r => r.utilization_pct), backgroundColor: '#0b6e6e' }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } } } });
+    chart('c2', { type: 'line', data: { labels: daily.map(r => r.day.slice(5)), datasets: [{ label: 'Часов', data: daily.map(r => r.hours), borderColor: '#0b6e6e', tension: .25, pointRadius: 0 }, { label: 'Броней', data: daily.map(r => r.bookings_cnt), borderColor: '#b36b00', tension: .25, pointRadius: 0 }] } });
+    $('util').innerHTML = table(['#', 'Комната', 'Где', 'Броней', 'Часов', 'Загрузка', 'В здании', 'Доля'],
+      util.slice(0, 15).map(r => `<tr><td>${r.rank_overall}</td><td>${esc(r.room_name)}</td><td>${esc(r.place)}</td><td class="num">${r.bookings_cnt}</td><td class="num">${r.booked_hours}</td><td class="num">${r.utilization_pct}%</td><td class="num">${r.rank_in_building}</td><td class="num">${r.share_pct ?? 0}%</td></tr>`), ['', '', '', 'num', 'num', 'num', 'num', 'num']);
+    $('sum').innerHTML = table(['Здание', 'Статус', 'Броней', 'Часов'], sum.map(r => {
+      const total = r.building === null || r.status === null;
+      return `<tr class="${total ? 'total' : ''}"><td>${esc(r.building ?? 'Все здания')}</td><td>${r.status ? STATUS[r.status] : 'Все статусы'}</td><td class="num">${r.bookings_cnt}</td><td class="num">${r.hours}</td></tr>`; }), ['', '', 'num', 'num']);
+    $('top').innerHTML = table(['Здание', '#', 'Пользователь', 'Броней', 'Часов'], top.map(r => `<tr><td>${esc(r.building)}</td><td>${r.rank}</td><td>${esc(r.full_name)}</td><td class="num">${r.bookings_cnt}</td><td class="num">${r.hours}</td></tr>`), ['', '', '', 'num', 'num']);
+    $('act').innerHTML = table(['Пользователь', 'Всего', 'Подтв.', 'Отменено', 'Часов', '% отмен', 'Последняя'], act.map(r => `<tr><td>${esc(r.full_name)}</td><td class="num">${r.bookings_total}</td><td class="num">${r.confirmed}</td><td class="num">${r.cancelled}</td><td class="num">${r.hours}</td><td class="num">${r.cancel_rate_pct ?? 0}%</td><td>${r.last_booking ? fmtDate(r.last_booking) : '—'}</td></tr>`), ['', 'num', 'num', 'num', 'num', 'num', '']);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function rooms() {
+  try {
+    const [tree, list] = await Promise.all([api('/locations/tree'), api('/rooms', { params: { limit: 200 } })]);
+    $('floor').innerHTML = tree.filter(l => l.kind === 'floor').map(l => `<option value="${l.id}">${esc(l.full_path)}</option>`).join('');
+    $('roomlist').innerHTML = table(['Комната', 'Где', 'Мест', '₽/час', 'Теги', ''], list.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.place)}</td><td class="num">${r.capacity}</td><td class="num">${Math.round(r.price_per_hour)}</td><td>${r.tags.map(esc).join(', ')}</td><td><button class="btn small danger" data-id="${r.id}">Скрыть</button></td></tr>`), ['', '', 'num', 'num', '', '']);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function audit() {
+  try {
+    const rows = await api('/reports/audit', { params: { limit: 60, table: $('atable').value } });
+    $('auditlist').innerHTML = table(['Когда', 'Таблица', 'Операция', 'Запись', 'Кто', 'Новые данные'], rows.map(r => `<tr><td>${fmtDateTime(r.created_at)}</td><td>${esc(r.table_name)}</td><td>${r.op}</td><td>${esc(r.row_id)}</td><td>${r.actor_id ?? '—'}</td><td><pre>${esc(JSON.stringify(r.new_data ?? r.old_data))}</pre></td></tr>`));
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  ['reports', 'rooms', 'audit'].forEach(t => $('t-' + t).hidden = t !== b.dataset.tab);
+  ({ reports, rooms, audit })[b.dataset.tab]();
+}));
+$('apply').addEventListener('click', reports);
+$('atable').addEventListener('change', audit);
+$('refresh').addEventListener('click', async () => { try { await api('/reports/refresh', { method: 'POST' }); toast('Представления обновлены'); reports(); } catch (e) { toast(e.message, 'err'); } });
+$('rf').addEventListener('submit', async e => {
+  e.preventDefault(); const f = new FormData(e.target);
+  const equipment = {}; ['projector', 'whiteboard', 'video_conference'].forEach(k => { if (f.get(k)) equipment[k] = true; });
+  try {
+    await api('/rooms', { method: 'POST', body: { name: f.get('name'), location_id: Number(f.get('location_id')), capacity: Number(f.get('capacity')), price_per_hour: Number(f.get('price') || 0),
+      tags: f.get('tags').split(',').map(s => s.trim()).filter(Boolean), equipment, description: f.get('description') || null } });
+    toast('Комната создана'); e.target.reset(); rooms();
+  } catch (err) { toast(err.message, 'err'); }
+});
+$('roomlist').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-id]'); if (!b || !confirm('Скрыть комнату из каталога?')) return;
+  try { await api('/rooms/' + b.dataset.id, { method: 'DELETE' }); toast('Комната скрыта'); rooms(); } catch (err) { toast(err.message, 'err'); }
+});
+
+renderNav('admin');
+if (store.user?.role === 'admin') {
+  $('app').hidden = false;
+  $('d2').value = todayStr(); $('d1').value = todayStr(new Date(Date.now() - 29 * 864e5));
+  reports();
+} else { $('deny').hidden = false; }
+</script></body></html>

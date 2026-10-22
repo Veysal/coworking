@@ -1,0 +1,111 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css"><title>Бронирование — Коворкинг</title></head><body>
+<div id="nav"></div>
+<main><div class="wrap">
+  <p><a href="index.html">← Все комнаты</a></p>
+  <div id="room"></div>
+  <div class="two">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Свободное время</h2>
+        <label>Дата<input id="day" type="date"></label>
+      </div>
+      <div id="slots" class="slots" style="margin-top:14px"></div>
+      <div class="legend">
+        <span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>свободно</span>
+        <span><i style="background:repeating-linear-gradient(135deg,#eef0f3 0 3px,#d5dae0 3px 6px)"></i>занято</span>
+        <span><i style="background:var(--accent)"></i>выбрано</span>
+      </div>
+      <p class="muted" id="live" style="font-size:.85rem;margin-bottom:0"></p>
+    </div>
+    <form class="panel" id="form">
+      <h2>Забронировать</h2>
+      <p id="summary" class="muted">Выберите свободный час в сетке слева.</p>
+      <label>Длительность
+        <select id="dur"><option value="1">1 час</option><option value="2">2 часа</option><option value="3">3 часа</option><option value="4">4 часа</option></select>
+      </label><br>
+      <label>Название встречи<input id="title" maxlength="200" placeholder="Планёрка, интервью…"></label><br>
+      <button class="btn" id="submit" disabled>Забронировать</button>
+    </form>
+  </div>
+</div></main>
+<script src="js/app.js"></script>
+<script>
+renderNav('rooms');
+const $ = id => document.getElementById(id);
+const roomId = Number(new URLSearchParams(location.search).get('room'));
+let slots = [], selected = null, room = null;
+
+async function loadRoom() {
+  try {
+    room = await api('/rooms/' + roomId);
+    const eq = Object.entries(room.equipment).filter(([, v]) => v !== false && v !== 0);
+    $('room').innerHTML = `<h1>${esc(room.name)}</h1>
+      <p class="muted">${esc(room.place)} · до ${room.capacity} чел. · ${Math.round(room.price_per_hour)} ₽/час</p>
+      <p>${esc(room.description)}</p>
+      <div class="chips" style="margin-bottom:18px">${room.tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}
+      ${eq.map(([k, v]) => `<span class="chip eq">${esc(k)}${v === true ? '' : ': ' + esc(v)}</span>`).join('')}</div>`;
+  } catch (e) { $('room').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function loadSlots() {
+  try {
+    slots = await api(`/rooms/${roomId}/availability`, { params: { date: $('day').value, tz } });
+    draw();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// сколько свободных будущих слотов подряд, начиная с i
+function runLength(i) { let n = 0; while (slots[i + n] && slots[i + n].is_free && new Date(slots[i + n].slot_start) > new Date()) n++; return n; }
+
+function draw() {
+  const dur = Number($('dur').value);
+  $('slots').innerHTML = slots.map((s, i) => {
+    const past = new Date(s.slot_start) < new Date();
+    const inSel = selected !== null && i >= selected && i < selected + dur;
+    const cls = !s.is_free ? 'busy' : past ? 'past' : inSel ? 'sel' : '';
+    return `<button type="button" class="slot ${cls}" data-i="${i}" ${(!s.is_free || past) ? 'disabled' : ''}>
+      ${fmtTime(s.slot_start)}<small>${!s.is_free ? 'занято' : past ? 'прошло' : 'свободно'}</small></button>`;
+  }).join('');
+  if (selected !== null) {
+    const ok = runLength(selected) >= dur;
+    $('summary').textContent = ok
+      ? `${fmtDate(slots[selected].slot_start)}, ${fmtTime(slots[selected].slot_start)} – ${fmtTime(slots[selected + dur - 1].slot_end)}`
+      : 'Столько свободного времени подряд нет — уменьшите длительность.';
+    $('submit').disabled = !ok;
+  } else { $('summary').textContent = 'Выберите свободный час в сетке слева.'; $('submit').disabled = true; }
+}
+
+$('slots').addEventListener('click', e => {
+  const b = e.target.closest('.slot'); if (!b || b.disabled) return;
+  selected = Number(b.dataset.i); draw();
+});
+$('dur').addEventListener('change', draw);
+$('day').addEventListener('change', () => { selected = null; loadSlots(); });
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!requireLogin() || selected === null) return;
+  const dur = Number($('dur').value);
+  try {
+    await api('/bookings', { method: 'POST', body: { room_id: roomId, start: slots[selected].slot_start, end: slots[selected + dur - 1].slot_end, title: $('title').value } });
+    toast('Бронь создана и ждёт подтверждения администратора');
+    selected = null; $('title').value = ''; loadSlots();
+  } catch (err) {
+    toast(err.status === 409 ? 'Это время только что заняли. Выберите другое.' : err.message, 'err');
+    if (err.status === 409) { selected = null; loadSlots(); }
+  }
+});
+
+const es = new EventSource(API + '/events');
+es.onopen = () => $('live').textContent = 'Обновляется в реальном времени';
+es.onerror = () => $('live').textContent = 'Нет связи с сервером, переподключаемся…';
+es.onmessage = m => {
+  const ev = JSON.parse(m.data);
+  if (ev.room_id === roomId && todayStr(new Date(ev.start)) === $('day').value) { loadSlots(); toast('Расписание комнаты изменилось'); }
+};
+
+$('day').value = todayStr(); $('day').min = todayStr();
+loadRoom().then(loadSlots);
+</script></body></html>

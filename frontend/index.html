@@ -1,0 +1,85 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css"><title>Комнаты — Коворкинг</title></head><body>
+<div id="nav"></div>
+<main><div class="wrap">
+  <h1>Выберите комнату</h1>
+  <p class="muted">Поиск понимает морфологию («проекторами» найдёт «проектор») и опечатки («Бэта» найдёт «Бета»).</p>
+
+  <div class="panel"><div class="row">
+    <label class="grow">Поиск<input id="q" type="search" placeholder="проектор, тихая, Альфа…" autocomplete="off"></label>
+    <label>Мест не меньше<input id="cap" type="number" min="1" max="100" style="width:110px"></label>
+    <label>Здание<select id="loc"><option value="">Любое</option></select></label>
+    <label>Тег<select id="tag"><option value="">Любой</option>
+      <option>silent</option><option>small</option><option>meeting</option><option>video</option>
+      <option>creative</option><option>event</option><option>large</option></select></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label class="check"><input type="checkbox" class="eq" value="projector"> Проектор</label>
+    <label class="check"><input type="checkbox" class="eq" value="whiteboard"> Маркерная доска</label>
+    <label class="check"><input type="checkbox" class="eq" value="video_conference"> Видеосвязь</label>
+    <span class="muted" id="count" style="margin-left:auto"></span>
+  </div></div>
+
+  <div class="panel">
+    <h2>Что свободно в это время</h2>
+    <div class="row">
+      <label>С<input id="fs" type="datetime-local"></label>
+      <label>До<input id="fe" type="datetime-local"></label>
+      <label>Мест не меньше<input id="fc" type="number" min="1" value="1" style="width:110px"></label>
+      <button class="btn" id="fbtn">Показать свободные</button>
+    </div>
+    <div id="free" class="scroll" style="margin-top:12px"></div>
+  </div>
+
+  <div id="list" class="cards"></div>
+</div></main>
+<script src="js/app.js"></script>
+<script>
+renderNav('rooms');
+const $ = id => document.getElementById(id);
+
+const headline = h => esc(h).replace(/&lt;b&gt;/g, '<mark>').replace(/&lt;\/b&gt;/g, '</mark>');
+
+async function loadRooms() {
+  const equipment = [...document.querySelectorAll('.eq:checked')].map(c => c.value).join(',');
+  try {
+    const rooms = await api('/rooms', { params: { q: $('q').value.trim(), min_capacity: $('cap').value, tag: $('tag').value, location_id: $('loc').value, equipment } });
+    $('count').textContent = rooms.length ? 'Найдено: ' + rooms[0].total_count : '';
+    $('list').innerHTML = rooms.length ? rooms.map(r => `
+      <a class="card" href="booking.html?room=${r.id}">
+        <h3>${esc(r.name)}</h3>
+        <div class="place">${esc(r.place)}</div>
+        <div class="desc">${r.headline ? headline(r.headline) : esc(r.description)}</div>
+        <div class="chips">${r.tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}
+          ${Object.entries(r.equipment).filter(([, v]) => v === true).map(([k]) => `<span class="chip eq">${esc(k)}</span>`).join('')}</div>
+        <div class="meta"><span>до ${r.capacity} чел.</span><strong>${Math.round(r.price_per_hour)} ₽/час</strong></div>
+      </a>`).join('') : '<div class="empty">Ничего не нашлось. Попробуйте убрать фильтры или изменить запрос.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadFree() {
+  if (!$('fs').value || !$('fe').value) return toast('Укажите начало и конец интервала', 'err');
+  try {
+    const rows = await api('/rooms/free', { params: { start: new Date($('fs').value).toISOString(), end: new Date($('fe').value).toISOString(), min_capacity: $('fc').value } });
+    $('free').innerHTML = rows.length ? `<table><tr><th>Комната</th><th>Где</th><th class="num">Мест</th><th class="num">₽/час</th><th>Ближайшая бронь после</th></tr>${rows.map(r => `
+      <tr><td><a href="booking.html?room=${r.id}">${esc(r.name)}</a></td><td>${esc(r.place)}</td><td class="num">${r.capacity}</td>
+      <td class="num">${Math.round(r.price_per_hour)}</td><td>${r.next_booking_at ? fmtDateTime(r.next_booking_at) : 'нет'}</td></tr>`).join('')}</table>`
+      : '<div class="empty">На это время свободных комнат нет.</div>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+(async () => {
+  const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
+  const e = new Date(d.getTime() + 3600e3), f = x => new Date(x.getTime() - x.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  $('fs').value = f(d); $('fe').value = f(e);
+  try { (await api('/locations/tree')).filter(l => l.kind === 'building').forEach(l => $('loc').add(new Option(l.name, l.id))); } catch {}
+  loadRooms();
+})();
+const reload = debounce(loadRooms, 300);
+$('q').addEventListener('input', reload);
+$('cap').addEventListener('input', reload);
+['tag', 'loc'].forEach(i => $(i).addEventListener('change', loadRooms));
+document.querySelectorAll('.eq').forEach(c => c.addEventListener('change', loadRooms));
+$('fbtn').addEventListener('click', loadFree);
+</script></body></html>
